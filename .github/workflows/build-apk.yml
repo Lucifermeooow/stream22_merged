@@ -29,50 +29,49 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Setup Gradle
+      - name: Setup Gradle 9.7.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.7.1"
 
-      - name: Show project structure
+      - name: Inspect project
         shell: bash
         run: |
-          set -u
+          set -euo pipefail
 
-          echo "=== Current directory ==="
+          echo "Repository:"
           pwd
 
-          echo "=== Top level ==="
+          echo "Root:"
           ls -la
 
-          echo "=== Gradle files ==="
+          echo "Gradle files:"
           find . -maxdepth 3 -type f \
             \( -name "settings.gradle" \
             -o -name "settings.gradle.kts" \
             -o -name "build.gradle" \
             -o -name "build.gradle.kts" \
-            -o -name "gradle-wrapper.properties" \
-            \) \
+            -o -name "gradle-wrapper.properties" \) \
             | sort
 
-          echo "=== Application files ==="
-          find . -maxdepth 3 -type f \
-            \( -name "AndroidManifest.xml" \
-            -o -name "gradlew" \
-            -o -name "pubspec.yaml" \
-            \) \
-            | sort
+          echo "App directory:"
+          if [ -d "app" ]; then
+            ls -la app
+          else
+            echo "::error::app directory not found"
+            exit 1
+          fi
 
       - name: Create debug keystore
         shell: bash
         run: |
           set -euo pipefail
 
-          KEYSTORE="$GITHUB_WORKSPACE/debug.keystore"
+          mkdir -p "$HOME/.android"
 
           keytool -genkeypair \
             -v \
-            -keystore "$KEYSTORE" \
+            -keystore "$HOME/.android/debug.keystore" \
             -storetype JKS \
             -storepass android \
             -keypass android \
@@ -82,50 +81,16 @@ jobs:
             -validity 10000 \
             -dname "CN=Android Debug,O=Android,C=US"
 
-          test -f "$KEYSTORE"
-          ls -lh "$KEYSTORE"
+          test -f "$HOME/.android/debug.keystore"
 
-      - name: Build Android Release
+      - name: Build Release APK
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew :app:assembleRelease --no-daemon --stacktrace
-            exit 0
-          fi
-
-          echo "No Gradle wrapper in repository."
-          echo "Using installed Gradle 9.7.1."
-
-          if [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ]; then
-            gradle :app:assembleRelease \
-              --no-daemon \
-              --stacktrace
-            exit 0
-          fi
-
-          echo "::error::No Gradle settings file found in repository root."
-          exit 1
-
-      - name: Locate APK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "=== APK files ==="
-          find . -type f -name "*.apk" -print | sort
-
-          APK="app/build/outputs/apk/release/app-release.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "::error::Expected APK was not generated."
-            exit 1
-          fi
-
-          echo "Found APK:"
-          ls -lh "$APK"
+          gradle :app:assembleRelease \
+            --no-daemon \
+            --stacktrace
 
       - name: Verify APK
         shell: bash
@@ -134,16 +99,21 @@ jobs:
 
           APK="app/build/outputs/apk/release/app-release.apk"
 
-          APKSIGNER="$(find "$ANDROID_HOME/build-tools" \
-            -type f \
-            -name "apksigner" \
-            | sort -V \
-            | tail -n 1)"
-
-          if [ -z "$APKSIGNER" ]; then
-            echo "::error::apksigner not found."
+          if [ ! -f "$APK" ]; then
+            echo "::error::APK was not generated."
+            find app/build -type f -name "*.apk" -print || true
             exit 1
           fi
+
+          ls -lh "$APK"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
+            -type f \
+            -name apksigner \
+            | sort -V \
+            | tail -n 1)
+
+          test -n "$APKSIGNER"
 
           "$APKSIGNER" verify --verbose "$APK"
 
