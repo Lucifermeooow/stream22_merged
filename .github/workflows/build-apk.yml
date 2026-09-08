@@ -1,6 +1,7 @@
 name: Stream 22 - Android Release
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -9,7 +10,6 @@ on:
     branches:
       - main
       - master
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,39 +20,35 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: "21"
 
-      # AGP 9.1.x requires Gradle >= 9.3.1.
-      - name: Set up Gradle 9.3.1
+      - name: Setup Gradle 9.7.1
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: "9.7.1"
 
-      - name: Inspect Android project
+      - name: Validate project files
         shell: bash
         run: |
           set -euo pipefail
           test -f settings.gradle.kts
           test -f app/build.gradle.kts
-          grep -n 'include(":app")' settings.gradle.kts
-          grep -n 'agp = "9.1.1"' gradle/libs.versions.toml
+          test -f gradle/libs.versions.toml
+          test -f scripts/download_red5_android_sdk.sh
+          echo "Project structure OK."
 
-      # The current Stream 22 Android module uses the default debug signing config
-      # for its release build. Re-create the standard debug keystore on the CI runner.
       - name: Prepare Android debug keystore
         shell: bash
         run: |
           set -euo pipefail
-
           mkdir -p "$HOME/.android"
-
           KEYSTORE="$HOME/.android/debug.keystore"
 
           if [ ! -f "$KEYSTORE" ]; then
@@ -70,54 +66,6 @@ jobs:
           fi
 
           test -f "$KEYSTORE"
-          ls -lh "$KEYSTORE"
-
-      # The current Red5 code reads these values from BuildConfig.
-      # The values are already present in Red5Config.kt in this repository.
-      # Mirror them into BuildConfig during CI so the checked-in source does not
-      # need to be edited manually.
-      - name: Generate Red5 BuildConfig fields
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          python3 <<'PY'
-          from pathlib import Path
-          import re
-
-          config = Path("app/src/main/java/com/ahmed/streamgit101/red5/Red5Config.kt")
-          gradle_file = Path("app/build.gradle.kts")
-
-          text = config.read_text(encoding="utf-8")
-          host_match = re.search(r'const\s+val\s+streamManagerHost:\s*String\s*=\s*"([^"]+)"', text)
-          license_match = re.search(r'const\s+val\s+sdkLicenseKey:\s*String\s*=\s*"([^"]+)"', text)
-
-          if not host_match or not license_match:
-              raise SystemExit("Could not read Red5 host/license from Red5Config.kt")
-
-          host = host_match.group(1)
-          license_key = license_match.group(1)
-
-          gradle = gradle_file.read_text(encoding="utf-8")
-
-          host_line = f'        buildConfigField("String", "RED5_STREAM_MANAGER_HOST", "\\"{host}\\"")'
-          license_line = f'        buildConfigField("String", "RED5_SDK_LICENSE_KEY", "\\"{license_key}\\"")'
-
-          if "RED5_STREAM_MANAGER_HOST" not in gradle:
-              marker = '        versionName = "22.0.0"'
-              if marker not in gradle:
-                  raise SystemExit("Could not find defaultConfig insertion point")
-              gradle = gradle.replace(
-                  marker,
-                  marker + "\n\n" + host_line + "\n" + license_line,
-                  1,
-              )
-
-          gradle_file.write_text(gradle, encoding="utf-8")
-          print("Red5 BuildConfig fields prepared.")
-          PY
-
-          grep -n "RED5_" app/build.gradle.kts
 
       - name: Download Red5 Android SDK
         shell: bash
@@ -126,16 +74,14 @@ jobs:
           chmod +x scripts/download_red5_android_sdk.sh
           ./scripts/download_red5_android_sdk.sh
           test -s app/libs/red5-cloud-sdk.aar
-          ls -lh app/libs/red5-cloud-sdk.aar
-
-      - name: Show Gradle version
-        run: gradle --version
 
       - name: Clean
         run: gradle clean --no-daemon
 
       - name: Build Release APK
+        shell: bash
         run: |
+          set -euo pipefail
           gradle :app:assembleRelease \
             --no-daemon \
             --stacktrace
@@ -144,7 +90,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           APK="app/build/outputs/apk/release/app-release.apk"
 
           if [ ! -f "$APK" ]; then
@@ -153,14 +98,12 @@ jobs:
             exit 1
           fi
 
-          echo "Release APK:"
           ls -lh "$APK"
 
       - name: Verify APK signature
         shell: bash
         run: |
           set -euo pipefail
-
           APK="app/build/outputs/apk/release/app-release.apk"
 
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" \
@@ -169,14 +112,10 @@ jobs:
             | sort -V \
             | tail -n 1)"
 
-          if [ -z "$APKSIGNER" ]; then
-            echo "::error::apksigner was not found."
-            exit 1
-          fi
-
+          test -n "$APKSIGNER"
           "$APKSIGNER" verify --verbose "$APK"
 
-      - name: Upload Release APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: stream22-release-apk
