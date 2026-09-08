@@ -29,90 +29,122 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Setup Gradle 9.7.1
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.7.1"
 
-      - name: Validate project files
+      - name: Show project structure
+        shell: bash
+        run: |
+          set -u
+
+          echo "=== Current directory ==="
+          pwd
+
+          echo "=== Top level ==="
+          ls -la
+
+          echo "=== Gradle files ==="
+          find . -maxdepth 3 -type f \
+            \( -name "settings.gradle" \
+            -o -name "settings.gradle.kts" \
+            -o -name "build.gradle" \
+            -o -name "build.gradle.kts" \
+            -o -name "gradle-wrapper.properties" \
+            \) \
+            | sort
+
+          echo "=== Application files ==="
+          find . -maxdepth 3 -type f \
+            \( -name "AndroidManifest.xml" \
+            -o -name "gradlew" \
+            -o -name "pubspec.yaml" \
+            \) \
+            | sort
+
+      - name: Create debug keystore
         shell: bash
         run: |
           set -euo pipefail
-          test -f settings.gradle.kts
-          test -f app/build.gradle.kts
-          test -f gradle/libs.versions.toml
-          test -f scripts/download_red5_android_sdk.sh
-          echo "Project structure OK."
 
-      - name: Prepare Android debug keystore
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.android"
-          KEYSTORE="$HOME/.android/debug.keystore"
+          KEYSTORE="$GITHUB_WORKSPACE/debug.keystore"
 
-          if [ ! -f "$KEYSTORE" ]; then
-            keytool -genkeypair \
-              -v \
-              -keystore "$KEYSTORE" \
-              -storetype JKS \
-              -storepass android \
-              -keypass android \
-              -alias androiddebugkey \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
-          fi
+          keytool -genkeypair \
+            -v \
+            -keystore "$KEYSTORE" \
+            -storetype JKS \
+            -storepass android \
+            -keypass android \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
 
           test -f "$KEYSTORE"
+          ls -lh "$KEYSTORE"
 
-      - name: Download Red5 Android SDK
+      - name: Build Android Release
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/download_red5_android_sdk.sh
-          ./scripts/download_red5_android_sdk.sh
-          test -s app/libs/red5-cloud-sdk.aar
 
-      - name: Clean
-        run: gradle clean --no-daemon
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace
+            exit 0
+          fi
 
-      - name: Build Release APK
+          echo "No Gradle wrapper in repository."
+          echo "Using installed Gradle 9.7.1."
+
+          if [ -f "settings.gradle" ] || [ -f "settings.gradle.kts" ]; then
+            gradle :app:assembleRelease \
+              --no-daemon \
+              --stacktrace
+            exit 0
+          fi
+
+          echo "::error::No Gradle settings file found in repository root."
+          exit 1
+
+      - name: Locate APK
         shell: bash
         run: |
           set -euo pipefail
-          gradle :app:assembleRelease \
-            --no-daemon \
-            --stacktrace
 
-      - name: Verify APK exists
-        shell: bash
-        run: |
-          set -euo pipefail
+          echo "=== APK files ==="
+          find . -type f -name "*.apk" -print | sort
+
           APK="app/build/outputs/apk/release/app-release.apk"
 
           if [ ! -f "$APK" ]; then
-            echo "::error::Release APK was not generated."
-            find app/build -type f -name "*.apk" -print | sort || true
+            echo "::error::Expected APK was not generated."
             exit 1
           fi
 
+          echo "Found APK:"
           ls -lh "$APK"
 
-      - name: Verify APK signature
+      - name: Verify APK
         shell: bash
         run: |
           set -euo pipefail
+
           APK="app/build/outputs/apk/release/app-release.apk"
 
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" \
             -type f \
-            -name apksigner \
+            -name "apksigner" \
             | sort -V \
             | tail -n 1)"
 
-          test -n "$APKSIGNER"
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found."
+            exit 1
+          fi
+
           "$APKSIGNER" verify --verbose "$APK"
 
       - name: Upload APK
